@@ -4,10 +4,6 @@ from telegram import Bot
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# =========================
-# CHANNEL CONFIGURATION
-# =========================
-
 FOREX_CHANNELS = [
     os.getenv("FOREX_CHANNEL_1"),
     os.getenv("FOREX_CHANNEL_2"),
@@ -21,26 +17,67 @@ CASINO_CHANNELS = [
 ]
 
 
-async def send_message(channel, message):
-    if not channel:
-        return
+async def send_to_channels(bot, channels, message):
+    for channel in channels:
+        if not channel:
+            continue
 
-    bot = Bot(token=BOT_TOKEN)
-    await bot.send_message(
-        chat_id=channel,
-        text=message
-    )
+        try:
+            await bot.send_message(
+                chat_id=channel,
+                text=message
+            )
+            print(f"✅ Sent to {channel}")
+
+        except Exception as e:
+            print(f"❌ Error sending to {channel}: {e}")
 
 
 async def main():
     print("🤖 Market Update Bot is running...")
 
-    # Test message
-    await send_message(
-        FOREX_CHANNELS[0],
-        "💱 FOREX UPDATE\n\n"
-        "The automated Forex update system is now online."
+    bot = Bot(token=BOT_TOKEN)
+
+    # Startup test
+    await send_to_channels(
+        bot,
+        FOREX_CHANNELS,
+        """💱 FOREX UPDATE
+
+🤖 Market Update Bot is now online.
+
+Automated Forex updates will be posted here.
+
+⚠️ Educational information only. Not financial advice."""
     )
+
+    await send_to_channels(
+        bot,
+        [CRYPTO_CHANNEL],
+        """₿ CRYPTO UPDATE
+
+🤖 Market Update Bot is now online.
+
+Automated Crypto updates will be posted here.
+
+⚠️ Educational information only. Not financial advice."""
+    )
+
+    await send_to_channels(
+        bot,
+        CASINO_CHANNELS,
+        """🎰 CASINO UPDATE
+
+🤖 Market Update Bot is now online.
+
+Automated Casino updates will be posted here.
+
+18+ | Play responsibly."""
+    )
+
+    # Keep the bot running
+    while True:
+        await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
