@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 
 from telegram import Update
 from telegram.ext import (
-    Application,
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
@@ -25,7 +24,9 @@ FOREX_CHANNELS = [
     os.getenv("FOREX_CHANNEL_2"),
 ]
 
-CRYPTO_CHANNEL = os.getenv("CRYPTO_CHANNEL")
+CRYPTO_CHANNELS = [
+    os.getenv("CRYPTO_CHANNEL"),
+]
 
 CASINO_CHANNELS = [
     os.getenv("CASINO_CHANNEL_1"),
@@ -34,31 +35,32 @@ CASINO_CHANNELS = [
 
 
 # =========================================================
+# NEWS RSS SOURCES
+# =========================================================
+
+FOREX_RSS = "https://www.investing.com/rss/news_1.rss"
+CRYPTO_RSS = "https://cointelegraph.com/rss"
+CASINO_RSS = "https://www.yogonet.com/international/online-gaming/rss.xml"
+
+
+# =========================================================
 # SETTINGS
 # =========================================================
 
-# How often the scheduler checks whether it is time to post.
-CHECK_EVERY_SECONDS = 60
+# Check for new articles every 2 minutes.
+CHECK_INTERVAL = 120
 
-# Posting times are UTC.
-# You can change these later.
-FOREX_TIMES = ["08:00", "14:00", "19:00"]
-CRYPTO_TIMES = ["09:00", "15:00", "21:00"]
-CASINO_TIMES = ["10:00", "16:00", "20:00"]
-
-# Casino RSS source
-CASINO_RSS_URL = "https://www.yogonet.com/international/online-gaming/rss.xml"
+# Number of previous articles remembered during this run.
+MAX_MEMORY = 300
 
 
 # =========================================================
 # MEMORY
 # =========================================================
 
-last_forex_post = None
-last_crypto_post = None
-last_casino_title = None
-
-sent_casino_items = set()
+seen_forex = set()
+seen_crypto = set()
+seen_casino = set()
 
 
 # =========================================================
@@ -71,500 +73,668 @@ async def start_command(
 ):
     await update.message.reply_text(
         "🤖 Market Update Bot is online.\n\n"
-        "✅ Forex updates\n"
-        "✅ Crypto updates\n"
-        "✅ Casino game updates\n\n"
-        "Automatic channel posting is active."
+        "💱 Forex monitoring: ACTIVE\n"
+        "₿ Crypto monitoring: ACTIVE\n"
+        "🎰 Casino monitoring: ACTIVE\n\n"
+        "New updates are automatically sent to their assigned channels."
     )
 
 
 # =========================================================
-# HELPERS
+# GENERAL HELPERS
 # =========================================================
 
-def valid_channels(channels):
-    return [c.strip() for c in channels if c and c.strip()]
+def clean_text(text):
+    if not text:
+        return ""
+
+    return " ".join(text.split())
 
 
-async def send_to_channel(
-    bot,
-    channel,
-    text
-):
-    try:
-        await bot.send_message(
-            chat_id=channel,
-            text=text,
-            disable_web_page_preview=True
-        )
-
-        print(f"✅ Posted to {channel}")
-
-    except Exception as e:
-        print(f"❌ Failed to post to {channel}: {e}")
+def get_entry_id(entry):
+    return (
+        entry.get("id")
+        or entry.get("guid")
+        or entry.get("link")
+        or entry.get("title")
+    )
 
 
-async def send_to_channels(
+def get_image(entry):
+    # Standard RSS media
+    media_content = entry.get("media_content")
+
+    if media_content:
+        for media in media_content:
+            url = media.get("url")
+            if url:
+                return url
+
+    # media_thumbnail
+    media_thumbnail = entry.get("media_thumbnail")
+
+    if media_thumbnail:
+        for media in media_thumbnail:
+            url = media.get("url")
+            if url:
+                return url
+
+    # enclosure
+    enclosures = entry.get("enclosures")
+
+    if enclosures:
+        for enclosure in enclosures:
+            url = enclosure.get("href") or enclosure.get("url")
+
+            if url:
+                content_type = enclosure.get("type", "")
+
+                if (
+                    content_type.startswith("image/")
+                    or content_type == ""
+                ):
+                    return url
+
+    # image in parsed links
+    links = entry.get("links", [])
+
+    for link in links:
+
+        href = link.get("href", "")
+        link_type = link.get("type", "")
+
+        if (
+            link_type.startswith("image/")
+            or any(
+                href.lower().endswith(ext)
+                for ext in [
+                    ".jpg",
+                    ".jpeg",
+                    ".png",
+                    ".webp"
+                ]
+            )
+        ):
+            return href
+
+    return None
+
+
+def get_summary(entry):
+    summary = (
+        entry.get("summary")
+        or entry.get("description")
+        or ""
+    )
+
+    summary = clean_text(summary)
+
+    # Keep Telegram posts compact.
+    if len(summary) > 500:
+        summary = summary[:497] + "..."
+
+    return summary
+
+
+def get_published(entry):
+    return (
+        entry.get("published")
+        or entry.get("updated")
+        or ""
+    )
+
+
+def remember(seen_set, item_id):
+    seen_set.add(item_id)
+
+    if len(seen_set) > MAX_MEMORY:
+
+        # Keep approximately the newest memory items.
+        items = list(seen_set)
+
+        seen_set.clear()
+
+        for item in items[-200:]:
+            seen_set.add(item)
+
+
+# =========================================================
+# TELEGRAM SENDER
+# =========================================================
+
+async def send_post(
     bot,
     channels,
-    text
+    text,
+    image_url=None
 ):
-    channels = valid_channels(channels)
+
+    channels = [
+        c.strip()
+        for c in channels
+        if c and c.strip()
+    ]
 
     for channel in channels:
-        await send_to_channel(
-            bot,
-            channel,
-            text
-        )
+
+        try:
+
+            if image_url:
+
+                try:
+
+                    async with aiohttp.ClientSession() as session:
+
+                        async with session.get(
+                            image_url,
+                            timeout=15
+                        ) as response:
+
+                            if response.status == 200:
+
+                                image_bytes = await response.read()
+
+                                await bot.send_photo(
+                                    chat_id=channel,
+                                    photo=image_bytes,
+                                    caption=text
+                                )
+
+                            else:
+
+                                await bot.send_message(
+                                    chat_id=channel,
+                                    text=text,
+                                    disable_web_page_preview=False
+                                )
+
+                except Exception as image_error:
+
+                    print(
+                        f"⚠️ Image failed for {channel}: "
+                        f"{image_error}"
+                    )
+
+                    await bot.send_message(
+                        chat_id=channel,
+                        text=text,
+                        disable_web_page_preview=False
+                    )
+
+            else:
+
+                await bot.send_message(
+                    chat_id=channel,
+                    text=text,
+                    disable_web_page_preview=False
+                )
+
+            print(
+                f"✅ Posted successfully to {channel}"
+            )
+
+        except Exception as error:
+
+            print(
+                f"❌ Could not post to {channel}: {error}"
+            )
 
         await asyncio.sleep(1)
 
 
-def utc_now():
-    return datetime.now(timezone.utc)
-
-
 # =========================================================
-# FOREX DATA
+# FORMAT FOREX
 # =========================================================
 
-async def get_forex_rate(
-    session,
-    pair
-):
-    url = f"https://api.frankfurter.dev/v2/rate/{pair}"
+def format_forex(entry):
 
-    try:
-        async with session.get(
-            url,
-            timeout=20
-        ) as response:
+    title = clean_text(
+        entry.get("title", "Forex Market Update")
+    )
 
-            if response.status != 200:
-                print(
-                    f"❌ Forex API error for {pair}: "
-                    f"{response.status}"
-                )
-                return None
-
-            data = await response.json()
-            return data
-
-    except Exception as e:
-        print(f"❌ Forex request failed for {pair}: {e}")
-        return None
-
-
-async def create_forex_update():
-
-    pairs = [
-        ("EUR", "USD"),
-        ("GBP", "USD"),
-        ("USD", "JPY"),
-        ("USD", "CAD"),
-        ("EUR", "GBP"),
-    ]
-
-    results = []
-
-    async with aiohttp.ClientSession() as session:
-
-        for base, quote in pairs:
-
-            data = await get_forex_rate(
-                session,
-                f"{base}/{quote}"
-            )
-
-            if data:
-                rate = data.get("rate")
-                date = data.get("date")
-
-                if rate is not None:
-
-                    results.append(
-                        f"• {base}/{quote}: {rate:.4f}"
-                    )
-
-    if not results:
-        return None
-
-    now = utc_now()
+    summary = get_summary(entry)
+    link = entry.get("link", "")
+    published = get_published(entry)
 
     text = (
-        "💱 FOREX MARKET UPDATE\n\n"
-        f"🕒 {now.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
-        + "\n".join(results)
-        + "\n\n"
-        "📌 Rates supplied by Frankfurter.\n"
-        "⚠️ Educational information only. Not financial advice."
+        "💱 FOREX MARKET ALERT\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"📰 {title}\n\n"
+    )
+
+    if summary:
+        text += (
+            "📊 MARKET FOCUS\n"
+            f"{summary}\n\n"
+        )
+
+    if published:
+        text += f"🕒 {published}\n\n"
+
+    if link:
+        text += f"🔗 Read full story\n{link}\n\n"
+
+    text += (
+        "📌 SOURCE: Investing.com\n\n"
+        "⚠️ Market news & information only.\n"
+        "Not financial advice."
     )
 
     return text
 
 
 # =========================================================
-# CRYPTO DATA
+# FORMAT CRYPTO
 # =========================================================
 
-async def get_crypto_data():
+def format_crypto(entry):
 
-    url = (
-        "https://api.coingecko.com/api/v3/simple/price"
-        "?ids=bitcoin,ethereum,binancecoin,solana,ripple"
-        "&vs_currencies=usd"
-        "&include_24hr_change=true"
-        "&include_24hr_vol=true"
+    title = clean_text(
+        entry.get("title", "Crypto Market Update")
     )
+
+    summary = get_summary(entry)
+    link = entry.get("link", "")
+    published = get_published(entry)
+
+    text = (
+        "₿ CRYPTO MARKET ALERT\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"📰 {title}\n\n"
+    )
+
+    if summary:
+        text += (
+            "📈 MARKET FOCUS\n"
+            f"{summary}\n\n"
+        )
+
+    if published:
+        text += f"🕒 {published}\n\n"
+
+    if link:
+        text += f"🔗 Read full story\n{link}\n\n"
+
+    text += (
+        "📌 SOURCE: Cointelegraph\n\n"
+        "⚠️ Market news & information only.\n"
+        "Not financial advice."
+    )
+
+    return text
+
+
+# =========================================================
+# FORMAT CASINO
+# =========================================================
+
+def format_casino(entry):
+
+    title = clean_text(
+        entry.get("title", "Casino Industry Update")
+    )
+
+    summary = get_summary(entry)
+    link = entry.get("link", "")
+    published = get_published(entry)
+
+    text = (
+        "🎰 CASINO & IGAMING ALERT\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"📰 {title}\n\n"
+    )
+
+    if summary:
+        text += (
+            "📌 INDUSTRY UPDATE\n"
+            f"{summary}\n\n"
+        )
+
+    if published:
+        text += f"🕒 {published}\n\n"
+
+    if link:
+        text += f"🔗 Read full story\n{link}\n\n"
+
+    text += (
+        "📌 SOURCE: Yogonet\n\n"
+        "🔞 18+ only.\n"
+        "Play responsibly."
+    )
+
+    return text
+
+
+# =========================================================
+# CHECK RSS FEED
+# =========================================================
+
+async def fetch_feed(url):
 
     try:
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 "
+                    "(compatible; MarketUpdateBot/1.0)"
+                )
+            }
+        ) as session:
 
             async with session.get(
                 url,
-                timeout=20
+                timeout=30
             ) as response:
 
                 if response.status != 200:
 
                     print(
-                        f"❌ CoinGecko API error: "
-                        f"{response.status}"
+                        f"❌ Feed returned HTTP "
+                        f"{response.status}: {url}"
                     )
 
                     return None
 
-                return await response.json()
+                content = await response.read()
 
-    except Exception as e:
+                feed = await asyncio.to_thread(
+                    feedparser.parse,
+                    content
+                )
 
-        print(
-            f"❌ Crypto request failed: {e}"
-        )
+                return feed
 
-        return None
-
-
-def format_price(price):
-
-    if price >= 1000:
-        return f"${price:,.2f}"
-
-    if price >= 1:
-        return f"${price:,.4f}"
-
-    return f"${price:,.6f}"
-
-
-async def create_crypto_update():
-
-    data = await get_crypto_data()
-
-    if not data:
-        return None
-
-    coins = [
-        ("bitcoin", "₿ Bitcoin"),
-        ("ethereum", "🔷 Ethereum"),
-        ("binancecoin", "🟡 BNB"),
-        ("solana", "🟣 Solana"),
-        ("ripple", "✕ XRP"),
-    ]
-
-    lines = []
-
-    for coin_id, name in coins:
-
-        coin = data.get(coin_id)
-
-        if not coin:
-            continue
-
-        price = coin.get("usd")
-        change = coin.get("usd_24h_change")
-
-        if price is None:
-            continue
-
-        if change is None:
-            change_text = "N/A"
-        else:
-            sign = "+" if change >= 0 else ""
-            change_text = f"{sign}{change:.2f}%"
-
-        lines.append(
-            f"• {name}: {format_price(price)} "
-            f"({change_text} 24h)"
-        )
-
-    if not lines:
-        return None
-
-    now = utc_now()
-
-    text = (
-        "₿ CRYPTO MARKET UPDATE\n\n"
-        f"🕒 {now.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
-        + "\n".join(lines)
-        + "\n\n"
-        "📊 24h price changes included.\n"
-        "⚠️ Educational information only. Not financial advice."
-    )
-
-    return text
-
-
-# =========================================================
-# CASINO NEWS
-# =========================================================
-
-async def get_casino_news():
-
-    global last_casino_title
-
-    try:
-
-        feed = await asyncio.to_thread(
-            feedparser.parse,
-            CASINO_RSS_URL
-        )
-
-        if not feed.entries:
-            print("❌ No casino RSS entries found.")
-            return None
-
-        for item in feed.entries:
-
-            title = item.get(
-                "title",
-                "Casino update"
-            ).strip()
-
-            link = item.get(
-                "link",
-                ""
-            ).strip()
-
-            published = item.get(
-                "published",
-                ""
-            ).strip()
-
-            # Don't repeat the same title
-            if title in sent_casino_items:
-                continue
-
-            sent_casino_items.add(title)
-            last_casino_title = title
-
-            text = (
-                "🎰 CASINO GAME UPDATE\n\n"
-                f"📰 {title}\n\n"
-            )
-
-            if published:
-                text += f"📅 {published}\n\n"
-
-            if link:
-                text += f"🔗 Read more: {link}\n\n"
-
-            text += (
-                "🔞 18+ only.\n"
-                "Play responsibly."
-            )
-
-            # Keep memory from growing forever
-            if len(sent_casino_items) > 100:
-                oldest = next(iter(sent_casino_items))
-                sent_casino_items.remove(oldest)
-
-            return text
-
-        print("ℹ️ No new casino article found.")
-        return None
-
-    except Exception as e:
+    except Exception as error:
 
         print(
-            f"❌ Casino RSS error: {e}"
+            f"❌ Feed error: {url} -> {error}"
         )
 
         return None
 
 
 # =========================================================
-# POST FUNCTIONS
+# PROCESS FOREX
 # =========================================================
 
-async def post_forex(bot):
+async def check_forex(bot):
 
-    global last_forex_post
+    print("🔎 Checking Forex news...")
 
-    print("💱 Creating Forex update...")
-
-    message = await create_forex_update()
-
-    if not message:
-        print("❌ Forex update could not be created.")
-        return
-
-    await send_to_channels(
-        bot,
-        FOREX_CHANNELS,
-        message
+    feed = await fetch_feed(
+        FOREX_RSS
     )
 
-    last_forex_post = utc_now()
+    if not feed or not feed.entries:
 
-
-async def post_crypto(bot):
-
-    global last_crypto_post
-
-    print("₿ Creating Crypto update...")
-
-    message = await create_crypto_update()
-
-    if not message:
-        print("❌ Crypto update could not be created.")
+        print("ℹ️ No Forex feed entries.")
         return
 
-    await send_to_channels(
-        bot,
-        [CRYPTO_CHANNEL],
-        message
+    # Feed is normally newest first.
+    newest_entries = list(
+        reversed(
+            feed.entries[-10:]
+        )
     )
 
-    last_crypto_post = utc_now()
+    for entry in newest_entries:
 
+        item_id = get_entry_id(entry)
 
-async def post_casino(bot):
+        if not item_id:
+            continue
 
-    print("🎰 Looking for casino news...")
+        if item_id in seen_forex:
+            continue
 
-    message = await get_casino_news()
+        remember(
+            seen_forex,
+            item_id
+        )
 
-    if not message:
-        print("ℹ️ No new casino update.")
-        return
+        title = clean_text(
+            entry.get("title", "")
+        )
 
-    await send_to_channels(
-        bot,
-        CASINO_CHANNELS,
-        message
-    )
+        print(
+            f"🆕 NEW FOREX UPDATE: {title}"
+        )
+
+        text = format_forex(entry)
+        image = get_image(entry)
+
+        await send_post(
+            bot,
+            FOREX_CHANNELS,
+            text,
+            image
+        )
 
 
 # =========================================================
-# SCHEDULER
+# PROCESS CRYPTO
 # =========================================================
 
-async def scheduler_loop(application):
+async def check_crypto(bot):
 
-    print("⏰ Scheduler started.")
+    print("🔎 Checking Crypto news...")
 
-    last_run = {
-        "forex": set(),
-        "crypto": set(),
-        "casino": set(),
-    }
+    feed = await fetch_feed(
+        CRYPTO_RSS
+    )
+
+    if not feed or not feed.entries:
+
+        print("ℹ️ No Crypto feed entries.")
+        return
+
+    newest_entries = list(
+        reversed(
+            feed.entries[-10:]
+        )
+    )
+
+    for entry in newest_entries:
+
+        item_id = get_entry_id(entry)
+
+        if not item_id:
+            continue
+
+        if item_id in seen_crypto:
+            continue
+
+        remember(
+            seen_crypto,
+            item_id
+        )
+
+        title = clean_text(
+            entry.get("title", "")
+        )
+
+        print(
+            f"🆕 NEW CRYPTO UPDATE: {title}"
+        )
+
+        text = format_crypto(entry)
+        image = get_image(entry)
+
+        await send_post(
+            bot,
+            CRYPTO_CHANNELS,
+            text,
+            image
+        )
+
+
+# =========================================================
+# PROCESS CASINO
+# =========================================================
+
+async def check_casino(bot):
+
+    print("🔎 Checking Casino news...")
+
+    feed = await fetch_feed(
+        CASINO_RSS
+    )
+
+    if not feed or not feed.entries:
+
+        print("ℹ️ No Casino feed entries.")
+        return
+
+    newest_entries = list(
+        reversed(
+            feed.entries[-10:]
+        )
+    )
+
+    for entry in newest_entries:
+
+        item_id = get_entry_id(entry)
+
+        if not item_id:
+            continue
+
+        if item_id in seen_casino:
+            continue
+
+        remember(
+            seen_casino,
+            item_id
+        )
+
+        title = clean_text(
+            entry.get("title", "")
+        )
+
+        print(
+            f"🆕 NEW CASINO UPDATE: {title}"
+        )
+
+        text = format_casino(entry)
+        image = get_image(entry)
+
+        await send_post(
+            bot,
+            CASINO_CHANNELS,
+            text,
+            image
+        )
+
+
+# =========================================================
+# NEWS MONITOR
+# =========================================================
+
+async def news_monitor(application):
+
+    print("========================================")
+    print("📰 NEWS MONITOR STARTED")
+    print("========================================")
+
+    # -----------------------------------------------------
+    # FIRST SCAN
+    # -----------------------------------------------------
+    #
+    # We DON'T immediately publish every article already
+    # sitting in the RSS feed when the bot starts.
+    #
+    # We mark current articles as seen first.
+    # New articles appearing afterward will be posted.
+    #
+
+    await initialize_seen_items()
+
+    print("✅ Existing articles marked as seen.")
+    print(
+        f"⏱ Checking feeds every "
+        f"{CHECK_INTERVAL} seconds."
+    )
 
     while True:
 
         try:
 
-            now = utc_now()
+            await check_forex(
+                application.bot
+            )
 
-            current_time = now.strftime("%H:%M")
-            date_key = now.strftime("%Y-%m-%d")
+            await check_crypto(
+                application.bot
+            )
 
-            # ---------------------------------------------
-            # FOREX
-            # ---------------------------------------------
+            await check_casino(
+                application.bot
+            )
 
-            if current_time in FOREX_TIMES:
-
-                key = f"{date_key}-{current_time}"
-
-                if key not in last_run["forex"]:
-
-                    print(
-                        f"💱 Forex schedule triggered "
-                        f"at {current_time} UTC"
-                    )
-
-                    await post_forex(
-                        application.bot
-                    )
-
-                    last_run["forex"].add(key)
-
-            # ---------------------------------------------
-            # CRYPTO
-            # ---------------------------------------------
-
-            if current_time in CRYPTO_TIMES:
-
-                key = f"{date_key}-{current_time}"
-
-                if key not in last_run["crypto"]:
-
-                    print(
-                        f"₿ Crypto schedule triggered "
-                        f"at {current_time} UTC"
-                    )
-
-                    await post_crypto(
-                        application.bot
-                    )
-
-                    last_run["crypto"].add(key)
-
-            # ---------------------------------------------
-            # CASINO
-            # ---------------------------------------------
-
-            if current_time in CASINO_TIMES:
-
-                key = f"{date_key}-{current_time}"
-
-                if key not in last_run["casino"]:
-
-                    print(
-                        f"🎰 Casino schedule triggered "
-                        f"at {current_time} UTC"
-                    )
-
-                    await post_casino(
-                        application.bot
-                    )
-
-                    last_run["casino"].add(key)
-
-            # Keep memory small
-            for category in last_run:
-
-                if len(last_run[category]) > 100:
-
-                    last_run[category] = set(
-                        list(last_run[category])[-50:]
-                    )
-
-        except Exception as e:
+        except Exception as error:
 
             print(
-                f"❌ Scheduler error: {e}"
+                f"❌ Monitor error: {error}"
             )
 
         await asyncio.sleep(
-            CHECK_EVERY_SECONDS
+            CHECK_INTERVAL
         )
 
 
 # =========================================================
-# APPLICATION START
+# INITIALIZE MEMORY
+# =========================================================
+
+async def initialize_seen_items():
+
+    global seen_forex
+    global seen_crypto
+    global seen_casino
+
+    feeds = [
+        ("forex", FOREX_RSS),
+        ("crypto", CRYPTO_RSS),
+        ("casino", CASINO_RSS),
+    ]
+
+    for category, url in feeds:
+
+        feed = await fetch_feed(
+            url
+        )
+
+        if not feed or not feed.entries:
+            continue
+
+        recent = feed.entries[-20:]
+
+        for entry in recent:
+
+            item_id = get_entry_id(entry)
+
+            if not item_id:
+                continue
+
+            if category == "forex":
+                seen_forex.add(item_id)
+
+            elif category == "crypto":
+                seen_crypto.add(item_id)
+
+            elif category == "casino":
+                seen_casino.add(item_id)
+
+    print(
+        f"📚 Memory loaded: "
+        f"Forex={len(seen_forex)}, "
+        f"Crypto={len(seen_crypto)}, "
+        f"Casino={len(seen_casino)}"
+    )
+
+
+# =========================================================
+# APPLICATION
 # =========================================================
 
 async def post_init(application):
@@ -574,19 +744,19 @@ async def post_init(application):
     print("========================================")
 
     print("✅ Telegram connected")
-    print("✅ Scheduler launching")
+    print("✅ News monitor launching")
 
-    application.bot_data["scheduler_task"] = (
-        asyncio.create_task(
-            scheduler_loop(application)
-        )
+    application.bot_data[
+        "monitor_task"
+    ] = asyncio.create_task(
+        news_monitor(application)
     )
 
 
 async def post_shutdown(application):
 
     task = application.bot_data.get(
-        "scheduler_task"
+        "monitor_task"
     )
 
     if task:
@@ -609,12 +779,12 @@ def main():
     if not BOT_TOKEN:
 
         print(
-            "❌ BOT_TOKEN is missing from Railway Variables."
+            "❌ BOT_TOKEN is missing."
         )
 
         return
 
-    application = (
+    app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .post_init(post_init)
@@ -622,7 +792,7 @@ def main():
         .build()
     )
 
-    application.add_handler(
+    app.add_handler(
         CommandHandler(
             "start",
             start_command
@@ -630,12 +800,10 @@ def main():
     )
 
     print(
-        "🚀 Starting Telegram polling..."
+        "🚀 Starting Telegram bot..."
     )
 
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES
-    )
+    app.run_polling()
 
 
 if __name__ == "__main__":
