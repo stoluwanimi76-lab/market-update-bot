@@ -3,215 +3,126 @@ import asyncio
 from telegram import Bot
 from telegram.error import TelegramError
 
-# ==========================================
-# BOT TOKEN
-# ==========================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ==========================================
-# CHANNELS
-# ==========================================
-
-FOREX_CHANNELS = [
-    os.getenv("FOREX_CHANNEL_1"),
-    os.getenv("FOREX_CHANNEL_2"),
-]
-
-CRYPTO_CHANNELS = [
-    os.getenv("CRYPTO_CHANNEL"),
-]
-
-CASINO_CHANNELS = [
-    os.getenv("CASINO_CHANNEL_1"),
-    os.getenv("CASINO_CHANNEL_2"),
+CHANNELS = [
+    ("FOREX 1", os.getenv("FOREX_CHANNEL_1")),
+    ("FOREX 2", os.getenv("FOREX_CHANNEL_2")),
+    ("CRYPTO", os.getenv("CRYPTO_CHANNEL")),
+    ("CASINO 1", os.getenv("CASINO_CHANNEL_1")),
+    ("CASINO 2", os.getenv("CASINO_CHANNEL_2")),
 ]
 
 
-# ==========================================
-# SEND MESSAGE FUNCTION
-# ==========================================
+TEST_MESSAGES = {
+    "FOREX": """💱 FOREX UPDATE
 
-async def send_message(bot, channel, message, category):
+✅ Forex channel connection test successful.
+
+Your automated Forex update bot is online.
+
+⚠️ Educational information only. Not financial advice.
+""",
+
+    "CRYPTO": """₿ CRYPTO UPDATE
+
+✅ Crypto channel connection test successful.
+
+Your automated Crypto update bot is online.
+
+⚠️ Educational information only. Not financial advice.
+""",
+
+    "CASINO": """🎰 CASINO GAME UPDATE
+
+✅ Casino channel connection test successful.
+
+Your automated Casino update bot is online.
+
+🔞 18+ only. Play responsibly.
+"""
+}
+
+
+def get_message(category):
+    if category == "FOREX":
+        return TEST_MESSAGES["FOREX"]
+
+    if category == "CRYPTO":
+        return TEST_MESSAGES["CRYPTO"]
+
+    return TEST_MESSAGES["CASINO"]
+
+
+def get_category(name):
+    if "FOREX" in name:
+        return "FOREX"
+
+    if "CRYPTO" in name:
+        return "CRYPTO"
+
+    return "CASINO"
+
+
+async def test_channel(bot, name, channel):
+
+    print(f"\n🔎 Testing {name}")
 
     if not channel:
-        print(f"⚠️ {category}: Channel variable is empty")
+        print(f"❌ {name}: Railway variable is EMPTY")
         return
 
+    channel = channel.strip()
+
+    print(f"📌 Target: {channel}")
+
     try:
+        chat = await bot.get_chat(channel)
+
+        print(f"✅ Channel found: {chat.title}")
+        print(f"🆔 Channel ID: {chat.id}")
+
         await bot.send_message(
-            chat_id=channel,
-            text=message
+            chat_id=chat.id,
+            text=get_message(get_category(name))
         )
 
-        print(f"✅ {category}: Successfully sent to {channel}")
+        print(f"✅ {name}: MESSAGE SENT SUCCESSFULLY")
 
-    except TelegramError as e:
-        print(f"❌ {category}: Failed to send to {channel}")
-        print(f"   Telegram error: {e}")
+    except TelegramError as error:
+        print(f"❌ {name}: TELEGRAM ERROR")
+        print(f"   {error}")
 
-    except Exception as e:
-        print(f"❌ {category}: Unexpected error with {channel}")
-        print(f"   Error: {e}")
+    except Exception as error:
+        print(f"❌ {name}: UNKNOWN ERROR")
+        print(f"   {error}")
 
-
-# ==========================================
-# FOREX TEST POST
-# ==========================================
-
-FOREX_MESSAGE = """
-💱 FOREX MARKET UPDATE
-
-🤖 Automated Forex Update System
-
-The Forex update service is now online.
-
-📊 Updates will include:
-• Major currency pairs
-• Market movements
-• Important Forex news
-• Economic events
-
-⚠️ Educational information only.
-Not financial advice.
-"""
-
-
-# ==========================================
-# CRYPTO TEST POST
-# ==========================================
-
-CRYPTO_MESSAGE = """
-₿ CRYPTO MARKET UPDATE
-
-🤖 Automated Crypto Update System
-
-The Crypto update service is now online.
-
-📊 Updates will include:
-• Bitcoin
-• Ethereum
-• Major cryptocurrencies
-• Market movements
-• Important crypto news
-
-⚠️ Educational information only.
-Not financial advice.
-"""
-
-
-# ==========================================
-# CASINO TEST POST
-# ==========================================
-
-CASINO_MESSAGE = """
-🎰 CASINO GAME UPDATE
-
-🤖 Automated Casino Update System
-
-The Casino update service is now online.
-
-🎮 Updates will include:
-• New casino games
-• Game releases
-• Provider updates
-• Casino industry news
-• Tournament information
-
-🔞 18+ only.
-Play responsibly.
-"""
-
-
-# ==========================================
-# MAIN PROGRAM
-# ==========================================
 
 async def main():
 
-    if not BOT_TOKEN:
-        print("❌ BOT_TOKEN is missing from Railway Variables")
-        return
+    print("========================================")
+    print("🤖 MARKET UPDATE BOT - CHANNEL TEST")
+    print("========================================")
 
-    print("====================================")
-    print("🤖 MARKET UPDATE BOT")
-    print("====================================")
-    print("🚀 Bot is starting...")
-    print("")
+    if not BOT_TOKEN:
+        print("❌ BOT_TOKEN is missing from Railway")
+        return
 
     bot = Bot(token=BOT_TOKEN)
 
-    # ======================================
-    # FOREX CHANNELS
-    # ======================================
-
-    print("💱 TESTING FOREX CHANNELS")
-    print("------------------------------------")
-
-    for channel in FOREX_CHANNELS:
-
-        await send_message(
-            bot,
-            channel,
-            FOREX_MESSAGE,
-            "FOREX"
-        )
-
+    for name, channel in CHANNELS:
+        await test_channel(bot, name, channel)
         await asyncio.sleep(2)
 
-    print("")
-
-    # ======================================
-    # CRYPTO CHANNEL
-    # ======================================
-
-    print("₿ TESTING CRYPTO CHANNEL")
-    print("------------------------------------")
-
-    for channel in CRYPTO_CHANNELS:
-
-        await send_message(
-            bot,
-            channel,
-            CRYPTO_MESSAGE,
-            "CRYPTO"
-        )
-
-        await asyncio.sleep(2)
-
-    print("")
-
-    # ======================================
-    # CASINO CHANNELS
-    # ======================================
-
-    print("🎰 TESTING CASINO CHANNELS")
-    print("------------------------------------")
-
-    for channel in CASINO_CHANNELS:
-
-        await send_message(
-            bot,
-            channel,
-            CASINO_MESSAGE,
-            "CASINO"
-        )
-
-        await asyncio.sleep(2)
-
-    print("")
-    print("====================================")
-    print("✅ ALL CHANNEL TESTS COMPLETED")
-    print("====================================")
+    print("\n========================================")
+    print("✅ ALL 5 CHANNEL TESTS FINISHED")
+    print("========================================")
 
     # Keep Railway service alive
     while True:
         await asyncio.sleep(3600)
 
-
-# ==========================================
-# START BOT
-# ==========================================
 
 if __name__ == "__main__":
     asyncio.run(main())
