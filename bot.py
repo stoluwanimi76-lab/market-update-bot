@@ -1,5 +1,7 @@
 import os
 import asyncio
+import html
+import re
 import feedparser
 import aiohttp
 
@@ -35,23 +37,30 @@ CASINO_CHANNELS = [
 
 
 # =========================================================
-# NEWS RSS SOURCES
+# RSS SOURCES
 # =========================================================
 
 FOREX_RSS = "https://www.investing.com/rss/news_1.rss"
-CRYPTO_RSS = "https://cointelegraph.com/rss"
-CASINO_RSS = "https://www.yogonet.com/international/online-gaming/rss.xml"
+
+# Cointelegraph RSS endpoint
+CRYPTO_RSS = "https://cointelegraph.com/?format=rss"
+
+# Yogonet Online Gaming RSS
+CASINO_RSS = (
+    "https://www.yogonet.com/"
+    "international/online-gaming/rss.xml"
+)
 
 
 # =========================================================
 # SETTINGS
 # =========================================================
 
-# Check for new articles every 2 minutes.
+# Check every 2 minutes
 CHECK_INTERVAL = 120
 
-# Number of previous articles remembered during this run.
-MAX_MEMORY = 300
+# Amount of article IDs remembered in memory
+MAX_MEMORY = 500
 
 
 # =========================================================
@@ -64,34 +73,42 @@ seen_casino = set()
 
 
 # =========================================================
-# START COMMAND
+# BASIC HELPERS
 # =========================================================
 
-async def start_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    await update.message.reply_text(
-        "🤖 Market Update Bot is online.\n\n"
-        "💱 Forex monitoring: ACTIVE\n"
-        "₿ Crypto monitoring: ACTIVE\n"
-        "🎰 Casino monitoring: ACTIVE\n\n"
-        "New updates are automatically sent to their assigned channels."
-    )
-
-
-# =========================================================
-# GENERAL HELPERS
-# =========================================================
-
-def clean_text(text):
+def clean_html(text):
     if not text:
         return ""
 
-    return " ".join(text.split())
+    text = html.unescape(text)
+
+    text = re.sub(
+        r"<[^>]+>",
+        " ",
+        text
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
+
+    return text.strip()
 
 
-def get_entry_id(entry):
+def shorten(text, limit=350):
+
+    text = clean_html(text)
+
+    if len(text) <= limit:
+        return text
+
+    return text[:limit - 3] + "..."
+
+
+def get_item_id(entry):
+
     return (
         entry.get("id")
         or entry.get("guid")
@@ -100,48 +117,134 @@ def get_entry_id(entry):
     )
 
 
-def get_image(entry):
-    # Standard RSS media
-    media_content = entry.get("media_content")
+def get_title(entry):
 
-    if media_content:
-        for media in media_content:
-            url = media.get("url")
-            if url:
-                return url
+    return clean_html(
+        entry.get(
+            "title",
+            "Market Update"
+        )
+    )
+
+
+def get_link(entry):
+
+    return (
+        entry.get("link")
+        or ""
+    ).strip()
+
+
+def get_published(entry):
+
+    return (
+        entry.get("published")
+        or entry.get("updated")
+        or ""
+    ).strip()
+
+
+def valid_channels(channels):
+
+    return [
+        c.strip()
+        for c in channels
+        if c and c.strip()
+    ]
+
+
+def remember(seen_set, item_id):
+
+    seen_set.add(item_id)
+
+    if len(seen_set) > MAX_MEMORY:
+
+        items = list(seen_set)
+
+        seen_set.clear()
+
+        for item in items[-350:]:
+            seen_set.add(item)
+
+
+# =========================================================
+# IMAGE EXTRACTION
+# =========================================================
+
+def get_image_url(entry):
+
+    # media_content
+    media_content = entry.get(
+        "media_content",
+        []
+    )
+
+    for media in media_content:
+
+        url = media.get("url")
+
+        if url:
+            return url
+
 
     # media_thumbnail
-    media_thumbnail = entry.get("media_thumbnail")
+    thumbnails = entry.get(
+        "media_thumbnail",
+        []
+    )
 
-    if media_thumbnail:
-        for media in media_thumbnail:
-            url = media.get("url")
-            if url:
-                return url
+    for media in thumbnails:
+
+        url = media.get("url")
+
+        if url:
+            return url
+
 
     # enclosure
-    enclosures = entry.get("enclosures")
+    enclosures = entry.get(
+        "enclosures",
+        []
+    )
 
-    if enclosures:
-        for enclosure in enclosures:
-            url = enclosure.get("href") or enclosure.get("url")
+    for enclosure in enclosures:
 
-            if url:
-                content_type = enclosure.get("type", "")
+        url = (
+            enclosure.get("href")
+            or enclosure.get("url")
+        )
 
-                if (
-                    content_type.startswith("image/")
-                    or content_type == ""
-                ):
-                    return url
+        if url:
 
-    # image in parsed links
-    links = entry.get("links", [])
+            content_type = (
+                enclosure.get("type")
+                or ""
+            )
+
+            if (
+                content_type.startswith("image/")
+                or content_type == ""
+            ):
+                return url
+
+
+    # links containing image
+    links = entry.get(
+        "links",
+        []
+    )
 
     for link in links:
 
-        href = link.get("href", "")
-        link_type = link.get("type", "")
+        href = link.get(
+            "href",
+            ""
+        )
+
+        link_type = link.get(
+            "type",
+            ""
+        )
 
         if (
             link_type.startswith("image/")
@@ -151,275 +254,33 @@ def get_image(entry):
                     ".jpg",
                     ".jpeg",
                     ".png",
-                    ".webp"
+                    ".webp",
                 ]
             )
         ):
             return href
 
+
     return None
 
 
-def get_summary(entry):
-    summary = (
-        entry.get("summary")
-        or entry.get("description")
-        or ""
-    )
-
-    summary = clean_text(summary)
-
-    # Keep Telegram posts compact.
-    if len(summary) > 500:
-        summary = summary[:497] + "..."
-
-    return summary
-
-
-def get_published(entry):
-    return (
-        entry.get("published")
-        or entry.get("updated")
-        or ""
-    )
-
-
-def remember(seen_set, item_id):
-    seen_set.add(item_id)
-
-    if len(seen_set) > MAX_MEMORY:
-
-        # Keep approximately the newest memory items.
-        items = list(seen_set)
-
-        seen_set.clear()
-
-        for item in items[-200:]:
-            seen_set.add(item)
-
-
 # =========================================================
-# TELEGRAM SENDER
-# =========================================================
-
-async def send_post(
-    bot,
-    channels,
-    text,
-    image_url=None
-):
-
-    channels = [
-        c.strip()
-        for c in channels
-        if c and c.strip()
-    ]
-
-    for channel in channels:
-
-        try:
-
-            if image_url:
-
-                try:
-
-                    async with aiohttp.ClientSession() as session:
-
-                        async with session.get(
-                            image_url,
-                            timeout=15
-                        ) as response:
-
-                            if response.status == 200:
-
-                                image_bytes = await response.read()
-
-                                await bot.send_photo(
-                                    chat_id=channel,
-                                    photo=image_bytes,
-                                    caption=text
-                                )
-
-                            else:
-
-                                await bot.send_message(
-                                    chat_id=channel,
-                                    text=text,
-                                    disable_web_page_preview=False
-                                )
-
-                except Exception as image_error:
-
-                    print(
-                        f"⚠️ Image failed for {channel}: "
-                        f"{image_error}"
-                    )
-
-                    await bot.send_message(
-                        chat_id=channel,
-                        text=text,
-                        disable_web_page_preview=False
-                    )
-
-            else:
-
-                await bot.send_message(
-                    chat_id=channel,
-                    text=text,
-                    disable_web_page_preview=False
-                )
-
-            print(
-                f"✅ Posted successfully to {channel}"
-            )
-
-        except Exception as error:
-
-            print(
-                f"❌ Could not post to {channel}: {error}"
-            )
-
-        await asyncio.sleep(1)
-
-
-# =========================================================
-# FORMAT FOREX
-# =========================================================
-
-def format_forex(entry):
-
-    title = clean_text(
-        entry.get("title", "Forex Market Update")
-    )
-
-    summary = get_summary(entry)
-    link = entry.get("link", "")
-    published = get_published(entry)
-
-    text = (
-        "💱 FOREX MARKET ALERT\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"📰 {title}\n\n"
-    )
-
-    if summary:
-        text += (
-            "📊 MARKET FOCUS\n"
-            f"{summary}\n\n"
-        )
-
-    if published:
-        text += f"🕒 {published}\n\n"
-
-    if link:
-        text += f"🔗 Read full story\n{link}\n\n"
-
-    text += (
-        "📌 SOURCE: Investing.com\n\n"
-        "⚠️ Market news & information only.\n"
-        "Not financial advice."
-    )
-
-    return text
-
-
-# =========================================================
-# FORMAT CRYPTO
-# =========================================================
-
-def format_crypto(entry):
-
-    title = clean_text(
-        entry.get("title", "Crypto Market Update")
-    )
-
-    summary = get_summary(entry)
-    link = entry.get("link", "")
-    published = get_published(entry)
-
-    text = (
-        "₿ CRYPTO MARKET ALERT\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"📰 {title}\n\n"
-    )
-
-    if summary:
-        text += (
-            "📈 MARKET FOCUS\n"
-            f"{summary}\n\n"
-        )
-
-    if published:
-        text += f"🕒 {published}\n\n"
-
-    if link:
-        text += f"🔗 Read full story\n{link}\n\n"
-
-    text += (
-        "📌 SOURCE: Cointelegraph\n\n"
-        "⚠️ Market news & information only.\n"
-        "Not financial advice."
-    )
-
-    return text
-
-
-# =========================================================
-# FORMAT CASINO
-# =========================================================
-
-def format_casino(entry):
-
-    title = clean_text(
-        entry.get("title", "Casino Industry Update")
-    )
-
-    summary = get_summary(entry)
-    link = entry.get("link", "")
-    published = get_published(entry)
-
-    text = (
-        "🎰 CASINO & IGAMING ALERT\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"📰 {title}\n\n"
-    )
-
-    if summary:
-        text += (
-            "📌 INDUSTRY UPDATE\n"
-            f"{summary}\n\n"
-        )
-
-    if published:
-        text += f"🕒 {published}\n\n"
-
-    if link:
-        text += f"🔗 Read full story\n{link}\n\n"
-
-    text += (
-        "📌 SOURCE: Yogonet\n\n"
-        "🔞 18+ only.\n"
-        "Play responsibly."
-    )
-
-    return text
-
-
-# =========================================================
-# CHECK RSS FEED
+# FEED FETCHER
 # =========================================================
 
 async def fetch_feed(url):
 
     try:
 
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 "
+                "(compatible; MarketUpdateBot/1.0)"
+            )
+        }
+
         async with aiohttp.ClientSession(
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 "
-                    "(compatible; MarketUpdateBot/1.0)"
-                )
-            }
+            headers=headers
         ) as session:
 
             async with session.get(
@@ -430,8 +291,8 @@ async def fetch_feed(url):
                 if response.status != 200:
 
                     print(
-                        f"❌ Feed returned HTTP "
-                        f"{response.status}: {url}"
+                        f"❌ RSS HTTP {response.status}: "
+                        f"{url}"
                     )
 
                     return None
@@ -448,14 +309,439 @@ async def fetch_feed(url):
     except Exception as error:
 
         print(
-            f"❌ Feed error: {url} -> {error}"
+            f"❌ Feed error: {url}"
         )
+        print(error)
 
         return None
 
 
 # =========================================================
-# PROCESS FOREX
+# TELEGRAM POSTER
+# =========================================================
+
+async def send_to_channel(
+    bot,
+    channel,
+    text,
+    image_url=None
+):
+
+    try:
+
+        if image_url:
+
+            try:
+
+                async with aiohttp.ClientSession() as session:
+
+                    async with session.get(
+                        image_url,
+                        timeout=20
+                    ) as response:
+
+                        if response.status == 200:
+
+                            image_data = (
+                                await response.read()
+                            )
+
+                            # Telegram captions max out
+                            # much earlier than messages,
+                            # so keep them compact.
+                            await bot.send_photo(
+                                chat_id=channel,
+                                photo=image_data,
+                                caption=text[:1024]
+                            )
+
+                            print(
+                                f"✅ Image post sent to {channel}"
+                            )
+
+                            return
+
+            except Exception as image_error:
+
+                print(
+                    f"⚠️ Image failed for {channel}: "
+                    f"{image_error}"
+                )
+
+
+        await bot.send_message(
+            chat_id=channel,
+            text=text,
+            disable_web_page_preview=False
+        )
+
+        print(
+            f"✅ Text post sent to {channel}"
+        )
+
+
+    except Exception as error:
+
+        print(
+            f"❌ Telegram post failed for "
+            f"{channel}: {error}"
+        )
+
+
+async def send_to_channels(
+    bot,
+    channels,
+    text,
+    image_url=None
+):
+
+    channels = valid_channels(
+        channels
+    )
+
+    for channel in channels:
+
+        await send_to_channel(
+            bot,
+            channel,
+            text,
+            image_url
+        )
+
+        await asyncio.sleep(1)
+
+
+# =========================================================
+# CRYPTO MARKET SNAPSHOT
+# =========================================================
+
+async def get_crypto_snapshot():
+
+    url = (
+        "https://api.coingecko.com/api/v3/simple/price"
+        "?ids=bitcoin,ethereum,binancecoin,solana,ripple"
+        "&vs_currencies=usd"
+        "&include_24hr_change=true"
+    )
+
+    try:
+
+        async with aiohttp.ClientSession() as session:
+
+            async with session.get(
+                url,
+                timeout=20
+            ) as response:
+
+                if response.status != 200:
+
+                    print(
+                        f"❌ CoinGecko HTTP "
+                        f"{response.status}"
+                    )
+
+                    return None
+
+                return await response.json()
+
+    except Exception as error:
+
+        print(
+            f"❌ CoinGecko error: {error}"
+        )
+
+        return None
+
+
+def format_price(price):
+
+    if price >= 1000:
+        return f"${price:,.2f}"
+
+    if price >= 1:
+        return f"${price:,.4f}"
+
+    return f"${price:,.6f}"
+
+
+def direction(change):
+
+    if change is None:
+        return "⚪"
+
+    if change > 0:
+        return "🟢"
+
+    if change < 0:
+        return "🔴"
+
+    return "⚪"
+
+
+async def build_crypto_snapshot():
+
+    data = await get_crypto_snapshot()
+
+    if not data:
+        return ""
+
+    coins = [
+        ("bitcoin", "BTC"),
+        ("ethereum", "ETH"),
+        ("binancecoin", "BNB"),
+        ("solana", "SOL"),
+        ("ripple", "XRP"),
+    ]
+
+    lines = []
+
+    for coin_id, symbol in coins:
+
+        coin = data.get(
+            coin_id
+        )
+
+        if not coin:
+            continue
+
+        price = coin.get(
+            "usd"
+        )
+
+        change = coin.get(
+            "usd_24h_change"
+        )
+
+        if price is None:
+            continue
+
+        if change is None:
+
+            change_text = "N/A"
+            arrow = "⚪"
+
+        else:
+
+            arrow = direction(
+                change
+            )
+
+            sign = (
+                "+"
+                if change >= 0
+                else ""
+            )
+
+            change_text = (
+                f"{sign}{change:.2f}%"
+            )
+
+        lines.append(
+            f"{arrow} {symbol} "
+            f"{format_price(price)} "
+            f"({change_text} 24H)"
+        )
+
+    if not lines:
+        return ""
+
+    return (
+        "📊 MARKET SNAPSHOT\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        + "\n".join(lines)
+    )
+
+
+# =========================================================
+# FOREX POST
+# =========================================================
+
+def build_forex_post(entry):
+
+    title = get_title(entry)
+
+    summary = shorten(
+        entry.get(
+            "summary",
+            ""
+        ),
+        300
+    )
+
+    link = get_link(entry)
+
+    published = get_published(
+        entry
+    )
+
+    now = datetime.now(
+        timezone.utc
+    )
+
+    text = (
+        "💱 FOREX MARKET ALERT\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"📰 {title}\n\n"
+    )
+
+    if summary:
+
+        text += (
+            "📌 MARKET FOCUS\n"
+            f"{summary}\n\n"
+        )
+
+    text += (
+        f"🕒 {published or now.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+    )
+
+    if link:
+
+        text += (
+            f"🔗 READ FULL STORY\n"
+            f"{link}\n\n"
+        )
+
+    text += (
+        "📍 SOURCE: Investing.com\n\n"
+        "⚠️ Market news & information only.\n"
+        "Not financial advice."
+    )
+
+    return text
+
+
+# =========================================================
+# CRYPTO POST
+# =========================================================
+
+async def build_crypto_post(entry):
+
+    title = get_title(entry)
+
+    summary = shorten(
+        entry.get(
+            "summary",
+            ""
+        ),
+        300
+    )
+
+    link = get_link(entry)
+
+    published = get_published(
+        entry
+    )
+
+    snapshot = (
+        await build_crypto_snapshot()
+    )
+
+    now = datetime.now(
+        timezone.utc
+    )
+
+    text = (
+        "₿ CRYPTO MARKET ALERT\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"📰 {title}\n\n"
+    )
+
+    if summary:
+
+        text += (
+            "📌 MARKET FOCUS\n"
+            f"{summary}\n\n"
+        )
+
+    if snapshot:
+
+        text += (
+            snapshot
+            + "\n\n"
+        )
+
+    text += (
+        f"🕒 {published or now.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+    )
+
+    if link:
+
+        text += (
+            "🔗 READ FULL STORY\n"
+            f"{link}\n\n"
+        )
+
+    text += (
+        "📍 SOURCE: Cointelegraph\n\n"
+        "⚠️ Market news & information only.\n"
+        "Not financial advice."
+    )
+
+    return text
+
+
+# =========================================================
+# CASINO POST
+# =========================================================
+
+def build_casino_post(entry):
+
+    title = get_title(entry)
+
+    summary = shorten(
+        entry.get(
+            "summary",
+            ""
+        ),
+        320
+    )
+
+    link = get_link(entry)
+
+    published = get_published(
+        entry
+    )
+
+    now = datetime.now(
+        timezone.utc
+    )
+
+    text = (
+        "🎰 CASINO & IGAMING ALERT\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"📰 {title}\n\n"
+    )
+
+    if summary:
+
+        text += (
+            "📌 INDUSTRY UPDATE\n"
+            f"{summary}\n\n"
+        )
+
+    text += (
+        f"🕒 {published or now.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+    )
+
+    if link:
+
+        text += (
+            "🔗 READ FULL STORY\n"
+            f"{link}\n\n"
+        )
+
+    text += (
+        "📍 SOURCE: Yogonet\n\n"
+        "🔞 18+ only.\n"
+        "Play responsibly."
+    )
+
+    return text
+
+
+# =========================================================
+# CHECK FOREX
 # =========================================================
 
 async def check_forex(bot):
@@ -468,19 +754,20 @@ async def check_forex(bot):
 
     if not feed or not feed.entries:
 
-        print("ℹ️ No Forex feed entries.")
+        print(
+            "ℹ️ Forex feed contains no entries."
+        )
+
         return
 
-    # Feed is normally newest first.
-    newest_entries = list(
-        reversed(
-            feed.entries[-10:]
+    # Newest article first
+    for entry in reversed(
+        feed.entries[-10:]
+    ):
+
+        item_id = get_item_id(
+            entry
         )
-    )
-
-    for entry in newest_entries:
-
-        item_id = get_entry_id(entry)
 
         if not item_id:
             continue
@@ -493,18 +780,23 @@ async def check_forex(bot):
             item_id
         )
 
-        title = clean_text(
-            entry.get("title", "")
+        title = get_title(
+            entry
         )
 
         print(
             f"🆕 NEW FOREX UPDATE: {title}"
         )
 
-        text = format_forex(entry)
-        image = get_image(entry)
+        text = build_forex_post(
+            entry
+        )
 
-        await send_post(
+        image = get_image_url(
+            entry
+        )
+
+        await send_to_channels(
             bot,
             FOREX_CHANNELS,
             text,
@@ -513,7 +805,7 @@ async def check_forex(bot):
 
 
 # =========================================================
-# PROCESS CRYPTO
+# CHECK CRYPTO
 # =========================================================
 
 async def check_crypto(bot):
@@ -526,18 +818,19 @@ async def check_crypto(bot):
 
     if not feed or not feed.entries:
 
-        print("ℹ️ No Crypto feed entries.")
+        print(
+            "ℹ️ Crypto feed contains no entries."
+        )
+
         return
 
-    newest_entries = list(
-        reversed(
-            feed.entries[-10:]
+    for entry in reversed(
+        feed.entries[-10:]
+    ):
+
+        item_id = get_item_id(
+            entry
         )
-    )
-
-    for entry in newest_entries:
-
-        item_id = get_entry_id(entry)
 
         if not item_id:
             continue
@@ -550,18 +843,23 @@ async def check_crypto(bot):
             item_id
         )
 
-        title = clean_text(
-            entry.get("title", "")
+        title = get_title(
+            entry
         )
 
         print(
             f"🆕 NEW CRYPTO UPDATE: {title}"
         )
 
-        text = format_crypto(entry)
-        image = get_image(entry)
+        text = await build_crypto_post(
+            entry
+        )
 
-        await send_post(
+        image = get_image_url(
+            entry
+        )
+
+        await send_to_channels(
             bot,
             CRYPTO_CHANNELS,
             text,
@@ -570,7 +868,7 @@ async def check_crypto(bot):
 
 
 # =========================================================
-# PROCESS CASINO
+# CHECK CASINO
 # =========================================================
 
 async def check_casino(bot):
@@ -583,18 +881,19 @@ async def check_casino(bot):
 
     if not feed or not feed.entries:
 
-        print("ℹ️ No Casino feed entries.")
+        print(
+            "ℹ️ Casino feed contains no entries."
+        )
+
         return
 
-    newest_entries = list(
-        reversed(
-            feed.entries[-10:]
+    for entry in reversed(
+        feed.entries[-10:]
+    ):
+
+        item_id = get_item_id(
+            entry
         )
-    )
-
-    for entry in newest_entries:
-
-        item_id = get_entry_id(entry)
 
         if not item_id:
             continue
@@ -607,18 +906,23 @@ async def check_casino(bot):
             item_id
         )
 
-        title = clean_text(
-            entry.get("title", "")
+        title = get_title(
+            entry
         )
 
         print(
             f"🆕 NEW CASINO UPDATE: {title}"
         )
 
-        text = format_casino(entry)
-        image = get_image(entry)
+        text = build_casino_post(
+            entry
+        )
 
-        await send_post(
+        image = get_image_url(
+            entry
+        )
+
+        await send_to_channels(
             bot,
             CASINO_CHANNELS,
             text,
@@ -627,31 +931,261 @@ async def check_casino(bot):
 
 
 # =========================================================
-# NEWS MONITOR
+# INITIAL MEMORY
 # =========================================================
 
-async def news_monitor(application):
+async def load_existing_articles():
 
-    print("========================================")
-    print("📰 NEWS MONITOR STARTED")
-    print("========================================")
+    global seen_forex
+    global seen_crypto
+    global seen_casino
 
-    # -----------------------------------------------------
-    # FIRST SCAN
-    # -----------------------------------------------------
-    #
-    # We DON'T immediately publish every article already
-    # sitting in the RSS feed when the bot starts.
-    #
-    # We mark current articles as seen first.
-    # New articles appearing afterward will be posted.
-    #
+    sources = [
+        (
+            "forex",
+            FOREX_RSS
+        ),
+        (
+            "crypto",
+            CRYPTO_RSS
+        ),
+        (
+            "casino",
+            CASINO_RSS
+        ),
+    ]
 
-    await initialize_seen_items()
+    for category, url in sources:
 
-    print("✅ Existing articles marked as seen.")
+        feed = await fetch_feed(
+            url
+        )
+
+        if not feed or not feed.entries:
+            continue
+
+        for entry in feed.entries[-20:]:
+
+            item_id = get_item_id(
+                entry
+            )
+
+            if not item_id:
+                continue
+
+            if category == "forex":
+
+                seen_forex.add(
+                    item_id
+                )
+
+            elif category == "crypto":
+
+                seen_crypto.add(
+                    item_id
+                )
+
+            elif category == "casino":
+
+                seen_casino.add(
+                    item_id
+                )
+
     print(
-        f"⏱ Checking feeds every "
+        "📚 Existing articles remembered:"
+    )
+
+    print(
+        f"   Forex: {len(seen_forex)}"
+    )
+
+    print(
+        f"   Crypto: {len(seen_crypto)}"
+    )
+
+    print(
+        f"   Casino: {len(seen_casino)}"
+    )
+
+
+# =========================================================
+# ADMIN TEST COMMANDS
+# =========================================================
+
+async def test_forex(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    message = await update.message.reply_text(
+        "🔎 Testing Forex feed..."
+    )
+
+    feed = await fetch_feed(
+        FOREX_RSS
+    )
+
+    if not feed or not feed.entries:
+
+        await message.edit_text(
+            "❌ Forex feed unavailable."
+        )
+
+        return
+
+    entry = feed.entries[0]
+
+    text = build_forex_post(
+        entry
+    )
+
+    image = get_image_url(
+        entry
+    )
+
+    await send_to_channels(
+        context.bot,
+        FOREX_CHANNELS,
+        text,
+        image
+    )
+
+    await message.edit_text(
+        "✅ Forex test post sent."
+    )
+
+
+async def test_crypto(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    message = await update.message.reply_text(
+        "🔎 Testing Crypto feed..."
+    )
+
+    feed = await fetch_feed(
+        CRYPTO_RSS
+    )
+
+    if not feed or not feed.entries:
+
+        await message.edit_text(
+            "❌ Crypto feed unavailable."
+        )
+
+        return
+
+    entry = feed.entries[0]
+
+    text = await build_crypto_post(
+        entry
+    )
+
+    image = get_image_url(
+        entry
+    )
+
+    await send_to_channels(
+        context.bot,
+        CRYPTO_CHANNELS,
+        text,
+        image
+    )
+
+    await message.edit_text(
+        "✅ Crypto test post sent."
+    )
+
+
+async def test_casino(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    message = await update.message.reply_text(
+        "🔎 Testing Casino feed..."
+    )
+
+    feed = await fetch_feed(
+        CASINO_RSS
+    )
+
+    if not feed or not feed.entries:
+
+        await message.edit_text(
+            "❌ Casino feed unavailable."
+        )
+
+        return
+
+    entry = feed.entries[0]
+
+    text = build_casino_post(
+        entry
+    )
+
+    image = get_image_url(
+        entry
+    )
+
+    await send_to_channels(
+        context.bot,
+        CASINO_CHANNELS,
+        text,
+        image
+    )
+
+    await message.edit_text(
+        "✅ Casino test post sent."
+    )
+
+
+# =========================================================
+# START
+# =========================================================
+
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await update.message.reply_text(
+        "🤖 MARKET UPDATE BOT\n\n"
+        "✅ Forex monitoring: ACTIVE\n"
+        "✅ Crypto monitoring: ACTIVE\n"
+        "✅ Casino monitoring: ACTIVE\n\n"
+        "📰 New updates are automatically "
+        "posted to their assigned channels.\n\n"
+        "Admin tests:\n"
+        "/test_forex\n"
+        "/test_crypto\n"
+        "/test_casino"
+    )
+
+
+# =========================================================
+# MONITOR
+# =========================================================
+
+async def monitor(application):
+
+    print(
+        "========================================"
+    )
+
+    print(
+        "📰 NEWS MONITOR STARTED"
+    )
+
+    print(
+        "========================================"
+    )
+
+    await load_existing_articles()
+
+    print(
+        f"⏱ Checking every "
         f"{CHECK_INTERVAL} seconds."
     )
 
@@ -683,77 +1217,43 @@ async def news_monitor(application):
 
 
 # =========================================================
-# INITIALIZE MEMORY
+# STARTUP
 # =========================================================
 
-async def initialize_seen_items():
-
-    global seen_forex
-    global seen_crypto
-    global seen_casino
-
-    feeds = [
-        ("forex", FOREX_RSS),
-        ("crypto", CRYPTO_RSS),
-        ("casino", CASINO_RSS),
-    ]
-
-    for category, url in feeds:
-
-        feed = await fetch_feed(
-            url
-        )
-
-        if not feed or not feed.entries:
-            continue
-
-        recent = feed.entries[-20:]
-
-        for entry in recent:
-
-            item_id = get_entry_id(entry)
-
-            if not item_id:
-                continue
-
-            if category == "forex":
-                seen_forex.add(item_id)
-
-            elif category == "crypto":
-                seen_crypto.add(item_id)
-
-            elif category == "casino":
-                seen_casino.add(item_id)
+async def post_init(
+    application
+):
 
     print(
-        f"📚 Memory loaded: "
-        f"Forex={len(seen_forex)}, "
-        f"Crypto={len(seen_crypto)}, "
-        f"Casino={len(seen_casino)}"
+        "========================================"
     )
 
+    print(
+        "🤖 MARKET UPDATE BOT"
+    )
 
-# =========================================================
-# APPLICATION
-# =========================================================
+    print(
+        "========================================"
+    )
 
-async def post_init(application):
+    print(
+        "✅ Telegram connected"
+    )
 
-    print("========================================")
-    print("🤖 MARKET UPDATE BOT")
-    print("========================================")
-
-    print("✅ Telegram connected")
-    print("✅ News monitor launching")
+    print(
+        "✅ News monitor launching"
+    )
 
     application.bot_data[
         "monitor_task"
     ] = asyncio.create_task(
-        news_monitor(application)
+        monitor(application)
     )
 
 
-async def post_shutdown(application):
+async def post_shutdown(
+    application
+):
 
     task = application.bot_data.get(
         "monitor_task"
@@ -784,7 +1284,7 @@ def main():
 
         return
 
-    app = (
+    application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .post_init(post_init)
@@ -792,10 +1292,31 @@ def main():
         .build()
     )
 
-    app.add_handler(
+    application.add_handler(
         CommandHandler(
             "start",
             start_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "test_forex",
+            test_forex
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "test_crypto",
+            test_crypto
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "test_casino",
+            test_casino
         )
     )
 
@@ -803,7 +1324,7 @@ def main():
         "🚀 Starting Telegram bot..."
     )
 
-    app.run_polling()
+    application.run_polling()
 
 
 if __name__ == "__main__":
