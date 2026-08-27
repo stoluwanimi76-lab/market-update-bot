@@ -15,10 +15,6 @@ from telegram.ext import (
 )
 
 
-# =========================================================
-# RAILWAY VARIABLES
-# =========================================================
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 FOREX_CHANNELS = [
@@ -36,70 +32,32 @@ CASINO_CHANNELS = [
 ]
 
 
-# =========================================================
-# RSS SOURCES
-# =========================================================
-
 FOREX_RSS = "https://www.investing.com/rss/news_1.rss"
-
-# Cointelegraph RSS endpoint
 CRYPTO_RSS = "https://cointelegraph.com/?format=rss"
+CASINO_RSS = "https://www.yogonet.com/international/online-gaming/rss.xml"
 
-# Yogonet Online Gaming RSS
-CASINO_RSS = (
-    "https://www.yogonet.com/"
-    "international/online-gaming/rss.xml"
-)
-
-
-# =========================================================
-# SETTINGS
-# =========================================================
-
-# Check every 2 minutes
 CHECK_INTERVAL = 120
-
-# Amount of article IDs remembered in memory
-MAX_MEMORY = 500
-
-
-# =========================================================
-# MEMORY
-# =========================================================
 
 seen_forex = set()
 seen_crypto = set()
 seen_casino = set()
 
+MAX_MEMORY = 500
 
-# =========================================================
-# BASIC HELPERS
-# =========================================================
 
-def clean_html(text):
+def clean_text(text):
     if not text:
         return ""
 
     text = html.unescape(text)
-
-    text = re.sub(
-        r"<[^>]+>",
-        " ",
-        text
-    )
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
 
 def shorten(text, limit=350):
-
-    text = clean_html(text)
+    text = clean_text(text)
 
     if len(text) <= limit:
         return text
@@ -107,8 +65,7 @@ def shorten(text, limit=350):
     return text[:limit - 3] + "..."
 
 
-def get_item_id(entry):
-
+def item_id(entry):
     return (
         entry.get("id")
         or entry.get("guid")
@@ -118,25 +75,18 @@ def get_item_id(entry):
 
 
 def get_title(entry):
-
-    return clean_html(
-        entry.get(
-            "title",
-            "Market Update"
-        )
+    return clean_text(
+        entry.get("title", "Market Update")
     )
 
 
 def get_link(entry):
-
     return (
-        entry.get("link")
-        or ""
+        entry.get("link") or ""
     ).strip()
 
 
 def get_published(entry):
-
     return (
         entry.get("published")
         or entry.get("updated")
@@ -144,129 +94,41 @@ def get_published(entry):
     ).strip()
 
 
-def valid_channels(channels):
+def get_image(entry):
 
-    return [
-        c.strip()
-        for c in channels
-        if c and c.strip()
-    ]
+    for media in entry.get("media_content", []):
+        if media.get("url"):
+            return media["url"]
 
+    for media in entry.get("media_thumbnail", []):
+        if media.get("url"):
+            return media["url"]
 
-def remember(seen_set, item_id):
-
-    seen_set.add(item_id)
-
-    if len(seen_set) > MAX_MEMORY:
-
-        items = list(seen_set)
-
-        seen_set.clear()
-
-        for item in items[-350:]:
-            seen_set.add(item)
-
-
-# =========================================================
-# IMAGE EXTRACTION
-# =========================================================
-
-def get_image_url(entry):
-
-    # media_content
-    media_content = entry.get(
-        "media_content",
-        []
-    )
-
-    for media in media_content:
-
-        url = media.get("url")
-
-        if url:
-            return url
-
-
-    # media_thumbnail
-    thumbnails = entry.get(
-        "media_thumbnail",
-        []
-    )
-
-    for media in thumbnails:
-
-        url = media.get("url")
-
-        if url:
-            return url
-
-
-    # enclosure
-    enclosures = entry.get(
-        "enclosures",
-        []
-    )
-
-    for enclosure in enclosures:
-
+    for enclosure in entry.get("enclosures", []):
         url = (
             enclosure.get("href")
             or enclosure.get("url")
         )
 
         if url:
-
-            content_type = (
-                enclosure.get("type")
-                or ""
-            )
-
-            if (
-                content_type.startswith("image/")
-                or content_type == ""
-            ):
-                return url
-
-
-    # links containing image
-    links = entry.get(
-        "links",
-        []
-    )
-
-    for link in links:
-
-        href = link.get(
-            "href",
-            ""
-        )
-
-        link_type = link.get(
-            "type",
-            ""
-        )
-
-        if (
-            link_type.startswith("image/")
-            or any(
-                href.lower().endswith(ext)
-                for ext in [
-                    ".jpg",
-                    ".jpeg",
-                    ".png",
-                    ".webp",
-                ]
-            )
-        ):
-            return href
-
+            return url
 
     return None
 
 
-# =========================================================
-# FEED FETCHER
-# =========================================================
+def remember(seen, value):
+
+    seen.add(value)
+
+    if len(seen) > MAX_MEMORY:
+
+        values = list(seen)
+
+        seen.clear()
+
+        for value in values[-350:]:
+            seen.add(value)
+
 
 async def fetch_feed(url):
 
@@ -291,292 +153,112 @@ async def fetch_feed(url):
                 if response.status != 200:
 
                     print(
-                        f"❌ RSS HTTP {response.status}: "
-                        f"{url}"
+                        f"❌ RSS HTTP {response.status}: {url}"
                     )
 
                     return None
 
                 content = await response.read()
 
-                feed = await asyncio.to_thread(
-                    feedparser.parse,
-                    content
-                )
-
-                return feed
+        return await asyncio.to_thread(
+            feedparser.parse,
+            content
+        )
 
     except Exception as error:
 
         print(
-            f"❌ Feed error: {url}"
+            f"❌ RSS error: {url}"
         )
         print(error)
 
         return None
 
 
-# =========================================================
-# TELEGRAM POSTER
-# =========================================================
-
-async def send_to_channel(
-    bot,
-    channel,
-    text,
-    image_url=None
-):
-
-    try:
-
-        if image_url:
-
-            try:
-
-                async with aiohttp.ClientSession() as session:
-
-                    async with session.get(
-                        image_url,
-                        timeout=20
-                    ) as response:
-
-                        if response.status == 200:
-
-                            image_data = (
-                                await response.read()
-                            )
-
-                            # Telegram captions max out
-                            # much earlier than messages,
-                            # so keep them compact.
-                            await bot.send_photo(
-                                chat_id=channel,
-                                photo=image_data,
-                                caption=text[:1024]
-                            )
-
-                            print(
-                                f"✅ Image post sent to {channel}"
-                            )
-
-                            return
-
-            except Exception as image_error:
-
-                print(
-                    f"⚠️ Image failed for {channel}: "
-                    f"{image_error}"
-                )
-
-
-        await bot.send_message(
-            chat_id=channel,
-            text=text,
-            disable_web_page_preview=False
-        )
-
-        print(
-            f"✅ Text post sent to {channel}"
-        )
-
-
-    except Exception as error:
-
-        print(
-            f"❌ Telegram post failed for "
-            f"{channel}: {error}"
-        )
-
-
-async def send_to_channels(
+async def send_post(
     bot,
     channels,
     text,
     image_url=None
 ):
 
-    channels = valid_channels(
-        channels
-    )
-
     for channel in channels:
 
-        await send_to_channel(
-            bot,
-            channel,
-            text,
-            image_url
-        )
+        if not channel:
+            print("⚠️ Empty channel variable.")
+            continue
+
+        channel = channel.strip()
+
+        try:
+
+            if image_url:
+
+                try:
+
+                    async with aiohttp.ClientSession() as session:
+
+                        async with session.get(
+                            image_url,
+                            timeout=20
+                        ) as response:
+
+                            if response.status == 200:
+
+                                image = await response.read()
+
+                                await bot.send_photo(
+                                    chat_id=channel,
+                                    photo=image,
+                                    caption=text[:1024]
+                                )
+
+                                print(
+                                    f"✅ Image posted to {channel}"
+                                )
+
+                                await asyncio.sleep(1)
+                                continue
+
+                except Exception as image_error:
+
+                    print(
+                        f"⚠️ Image failed for {channel}: "
+                        f"{image_error}"
+                    )
+
+            await bot.send_message(
+                chat_id=channel,
+                text=text,
+                disable_web_page_preview=False
+            )
+
+            print(
+                f"✅ Message posted to {channel}"
+            )
+
+        except Exception as error:
+
+            print(
+                f"❌ Telegram posting error "
+                f"for {channel}: {error}"
+            )
 
         await asyncio.sleep(1)
 
 
-# =========================================================
-# CRYPTO MARKET SNAPSHOT
-# =========================================================
-
-async def get_crypto_snapshot():
-
-    url = (
-        "https://api.coingecko.com/api/v3/simple/price"
-        "?ids=bitcoin,ethereum,binancecoin,solana,ripple"
-        "&vs_currencies=usd"
-        "&include_24hr_change=true"
-    )
-
-    try:
-
-        async with aiohttp.ClientSession() as session:
-
-            async with session.get(
-                url,
-                timeout=20
-            ) as response:
-
-                if response.status != 200:
-
-                    print(
-                        f"❌ CoinGecko HTTP "
-                        f"{response.status}"
-                    )
-
-                    return None
-
-                return await response.json()
-
-    except Exception as error:
-
-        print(
-            f"❌ CoinGecko error: {error}"
-        )
-
-        return None
-
-
-def format_price(price):
-
-    if price >= 1000:
-        return f"${price:,.2f}"
-
-    if price >= 1:
-        return f"${price:,.4f}"
-
-    return f"${price:,.6f}"
-
-
-def direction(change):
-
-    if change is None:
-        return "⚪"
-
-    if change > 0:
-        return "🟢"
-
-    if change < 0:
-        return "🔴"
-
-    return "⚪"
-
-
-async def build_crypto_snapshot():
-
-    data = await get_crypto_snapshot()
-
-    if not data:
-        return ""
-
-    coins = [
-        ("bitcoin", "BTC"),
-        ("ethereum", "ETH"),
-        ("binancecoin", "BNB"),
-        ("solana", "SOL"),
-        ("ripple", "XRP"),
-    ]
-
-    lines = []
-
-    for coin_id, symbol in coins:
-
-        coin = data.get(
-            coin_id
-        )
-
-        if not coin:
-            continue
-
-        price = coin.get(
-            "usd"
-        )
-
-        change = coin.get(
-            "usd_24h_change"
-        )
-
-        if price is None:
-            continue
-
-        if change is None:
-
-            change_text = "N/A"
-            arrow = "⚪"
-
-        else:
-
-            arrow = direction(
-                change
-            )
-
-            sign = (
-                "+"
-                if change >= 0
-                else ""
-            )
-
-            change_text = (
-                f"{sign}{change:.2f}%"
-            )
-
-        lines.append(
-            f"{arrow} {symbol} "
-            f"{format_price(price)} "
-            f"({change_text} 24H)"
-        )
-
-    if not lines:
-        return ""
-
-    return (
-        "📊 MARKET SNAPSHOT\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        + "\n".join(lines)
-    )
-
-
-# =========================================================
-# FOREX POST
-# =========================================================
-
-def build_forex_post(entry):
+def forex_post(entry):
 
     title = get_title(entry)
 
     summary = shorten(
-        entry.get(
-            "summary",
-            ""
-        ),
+        entry.get("summary", ""),
         300
     )
 
     link = get_link(entry)
 
-    published = get_published(
-        entry
-    )
-
-    now = datetime.now(
-        timezone.utc
-    )
+    published = get_published(entry)
 
     text = (
         "💱 FOREX MARKET ALERT\n"
@@ -585,20 +267,17 @@ def build_forex_post(entry):
     )
 
     if summary:
-
         text += (
             "📌 MARKET FOCUS\n"
             f"{summary}\n\n"
         )
 
-    text += (
-        f"🕒 {published or now.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
-    )
+    if published:
+        text += f"🕒 {published}\n\n"
 
     if link:
-
         text += (
-            f"🔗 READ FULL STORY\n"
+            "🔗 READ FULL STORY\n"
             f"{link}\n\n"
         )
 
@@ -611,35 +290,18 @@ def build_forex_post(entry):
     return text
 
 
-# =========================================================
-# CRYPTO POST
-# =========================================================
-
-async def build_crypto_post(entry):
+def crypto_post(entry):
 
     title = get_title(entry)
 
     summary = shorten(
-        entry.get(
-            "summary",
-            ""
-        ),
+        entry.get("summary", ""),
         300
     )
 
     link = get_link(entry)
 
-    published = get_published(
-        entry
-    )
-
-    snapshot = (
-        await build_crypto_snapshot()
-    )
-
-    now = datetime.now(
-        timezone.utc
-    )
+    published = get_published(entry)
 
     text = (
         "₿ CRYPTO MARKET ALERT\n"
@@ -648,25 +310,15 @@ async def build_crypto_post(entry):
     )
 
     if summary:
-
         text += (
             "📌 MARKET FOCUS\n"
             f"{summary}\n\n"
         )
 
-    if snapshot:
-
-        text += (
-            snapshot
-            + "\n\n"
-        )
-
-    text += (
-        f"🕒 {published or now.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
-    )
+    if published:
+        text += f"🕒 {published}\n\n"
 
     if link:
-
         text += (
             "🔗 READ FULL STORY\n"
             f"{link}\n\n"
@@ -681,31 +333,18 @@ async def build_crypto_post(entry):
     return text
 
 
-# =========================================================
-# CASINO POST
-# =========================================================
-
-def build_casino_post(entry):
+def casino_post(entry):
 
     title = get_title(entry)
 
     summary = shorten(
-        entry.get(
-            "summary",
-            ""
-        ),
+        entry.get("summary", ""),
         320
     )
 
     link = get_link(entry)
 
-    published = get_published(
-        entry
-    )
-
-    now = datetime.now(
-        timezone.utc
-    )
+    published = get_published(entry)
 
     text = (
         "🎰 CASINO & IGAMING ALERT\n"
@@ -714,18 +353,15 @@ def build_casino_post(entry):
     )
 
     if summary:
-
         text += (
             "📌 INDUSTRY UPDATE\n"
             f"{summary}\n\n"
         )
 
-    text += (
-        f"🕒 {published or now.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
-    )
+    if published:
+        text += f"🕒 {published}\n\n"
 
     if link:
-
         text += (
             "🔗 READ FULL STORY\n"
             f"{link}\n\n"
@@ -740,294 +376,19 @@ def build_casino_post(entry):
     return text
 
 
-# =========================================================
-# CHECK FOREX
-# =========================================================
+async def test_forex(update, context):
 
-async def check_forex(bot):
+    print("🧪 /test_forex received")
 
-    print("🔎 Checking Forex news...")
-
-    feed = await fetch_feed(
-        FOREX_RSS
+    await update.message.reply_text(
+        "🔎 Testing Forex..."
     )
+
+    feed = await fetch_feed(FOREX_RSS)
 
     if not feed or not feed.entries:
 
-        print(
-            "ℹ️ Forex feed contains no entries."
-        )
-
-        return
-
-    # Newest article first
-    for entry in reversed(
-        feed.entries[-10:]
-    ):
-
-        item_id = get_item_id(
-            entry
-        )
-
-        if not item_id:
-            continue
-
-        if item_id in seen_forex:
-            continue
-
-        remember(
-            seen_forex,
-            item_id
-        )
-
-        title = get_title(
-            entry
-        )
-
-        print(
-            f"🆕 NEW FOREX UPDATE: {title}"
-        )
-
-        text = build_forex_post(
-            entry
-        )
-
-        image = get_image_url(
-            entry
-        )
-
-        await send_to_channels(
-            bot,
-            FOREX_CHANNELS,
-            text,
-            image
-        )
-
-
-# =========================================================
-# CHECK CRYPTO
-# =========================================================
-
-async def check_crypto(bot):
-
-    print("🔎 Checking Crypto news...")
-
-    feed = await fetch_feed(
-        CRYPTO_RSS
-    )
-
-    if not feed or not feed.entries:
-
-        print(
-            "ℹ️ Crypto feed contains no entries."
-        )
-
-        return
-
-    for entry in reversed(
-        feed.entries[-10:]
-    ):
-
-        item_id = get_item_id(
-            entry
-        )
-
-        if not item_id:
-            continue
-
-        if item_id in seen_crypto:
-            continue
-
-        remember(
-            seen_crypto,
-            item_id
-        )
-
-        title = get_title(
-            entry
-        )
-
-        print(
-            f"🆕 NEW CRYPTO UPDATE: {title}"
-        )
-
-        text = await build_crypto_post(
-            entry
-        )
-
-        image = get_image_url(
-            entry
-        )
-
-        await send_to_channels(
-            bot,
-            CRYPTO_CHANNELS,
-            text,
-            image
-        )
-
-
-# =========================================================
-# CHECK CASINO
-# =========================================================
-
-async def check_casino(bot):
-
-    print("🔎 Checking Casino news...")
-
-    feed = await fetch_feed(
-        CASINO_RSS
-    )
-
-    if not feed or not feed.entries:
-
-        print(
-            "ℹ️ Casino feed contains no entries."
-        )
-
-        return
-
-    for entry in reversed(
-        feed.entries[-10:]
-    ):
-
-        item_id = get_item_id(
-            entry
-        )
-
-        if not item_id:
-            continue
-
-        if item_id in seen_casino:
-            continue
-
-        remember(
-            seen_casino,
-            item_id
-        )
-
-        title = get_title(
-            entry
-        )
-
-        print(
-            f"🆕 NEW CASINO UPDATE: {title}"
-        )
-
-        text = build_casino_post(
-            entry
-        )
-
-        image = get_image_url(
-            entry
-        )
-
-        await send_to_channels(
-            bot,
-            CASINO_CHANNELS,
-            text,
-            image
-        )
-
-
-# =========================================================
-# INITIAL MEMORY
-# =========================================================
-
-async def load_existing_articles():
-
-    global seen_forex
-    global seen_crypto
-    global seen_casino
-
-    sources = [
-        (
-            "forex",
-            FOREX_RSS
-        ),
-        (
-            "crypto",
-            CRYPTO_RSS
-        ),
-        (
-            "casino",
-            CASINO_RSS
-        ),
-    ]
-
-    for category, url in sources:
-
-        feed = await fetch_feed(
-            url
-        )
-
-        if not feed or not feed.entries:
-            continue
-
-        for entry in feed.entries[-20:]:
-
-            item_id = get_item_id(
-                entry
-            )
-
-            if not item_id:
-                continue
-
-            if category == "forex":
-
-                seen_forex.add(
-                    item_id
-                )
-
-            elif category == "crypto":
-
-                seen_crypto.add(
-                    item_id
-                )
-
-            elif category == "casino":
-
-                seen_casino.add(
-                    item_id
-                )
-
-    print(
-        "📚 Existing articles remembered:"
-    )
-
-    print(
-        f"   Forex: {len(seen_forex)}"
-    )
-
-    print(
-        f"   Crypto: {len(seen_crypto)}"
-    )
-
-    print(
-        f"   Casino: {len(seen_casino)}"
-    )
-
-
-# =========================================================
-# ADMIN TEST COMMANDS
-# =========================================================
-
-async def test_forex(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    message = await update.message.reply_text(
-        "🔎 Testing Forex feed..."
-    )
-
-    feed = await fetch_feed(
-        FOREX_RSS
-    )
-
-    if not feed or not feed.entries:
-
-        await message.edit_text(
+        await update.message.reply_text(
             "❌ Forex feed unavailable."
         )
 
@@ -1035,42 +396,31 @@ async def test_forex(
 
     entry = feed.entries[0]
 
-    text = build_forex_post(
-        entry
-    )
-
-    image = get_image_url(
-        entry
-    )
-
-    await send_to_channels(
+    await send_post(
         context.bot,
         FOREX_CHANNELS,
-        text,
-        image
+        forex_post(entry),
+        get_image(entry)
     )
 
-    await message.edit_text(
-        "✅ Forex test post sent."
+    await update.message.reply_text(
+        "✅ Forex test completed."
     )
 
 
-async def test_crypto(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def test_crypto(update, context):
 
-    message = await update.message.reply_text(
-        "🔎 Testing Crypto feed..."
+    print("🧪 /test_crypto received")
+
+    await update.message.reply_text(
+        "🔎 Testing Crypto..."
     )
 
-    feed = await fetch_feed(
-        CRYPTO_RSS
-    )
+    feed = await fetch_feed(CRYPTO_RSS)
 
     if not feed or not feed.entries:
 
-        await message.edit_text(
+        await update.message.reply_text(
             "❌ Crypto feed unavailable."
         )
 
@@ -1078,42 +428,31 @@ async def test_crypto(
 
     entry = feed.entries[0]
 
-    text = await build_crypto_post(
-        entry
-    )
-
-    image = get_image_url(
-        entry
-    )
-
-    await send_to_channels(
+    await send_post(
         context.bot,
         CRYPTO_CHANNELS,
-        text,
-        image
+        crypto_post(entry),
+        get_image(entry)
     )
 
-    await message.edit_text(
-        "✅ Crypto test post sent."
+    await update.message.reply_text(
+        "✅ Crypto test completed."
     )
 
 
-async def test_casino(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def test_casino(update, context):
 
-    message = await update.message.reply_text(
-        "🔎 Testing Casino feed..."
+    print("🧪 /test_casino received")
+
+    await update.message.reply_text(
+        "🔎 Testing Casino..."
     )
 
-    feed = await fetch_feed(
-        CASINO_RSS
-    )
+    feed = await fetch_feed(CASINO_RSS)
 
     if not feed or not feed.entries:
 
-        await message.edit_text(
+        await update.message.reply_text(
             "❌ Casino feed unavailable."
         )
 
@@ -1121,72 +460,196 @@ async def test_casino(
 
     entry = feed.entries[0]
 
-    text = build_casino_post(
-        entry
-    )
-
-    image = get_image_url(
-        entry
-    )
-
-    await send_to_channels(
+    await send_post(
         context.bot,
         CASINO_CHANNELS,
-        text,
-        image
+        casino_post(entry),
+        get_image(entry)
     )
 
-    await message.edit_text(
-        "✅ Casino test post sent."
+    await update.message.reply_text(
+        "✅ Casino test completed."
     )
 
 
-# =========================================================
-# START
-# =========================================================
+async def start_command(update, context):
 
-async def start_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+    print("🧪 /start received")
 
     await update.message.reply_text(
         "🤖 MARKET UPDATE BOT\n\n"
-        "✅ Forex monitoring: ACTIVE\n"
-        "✅ Crypto monitoring: ACTIVE\n"
-        "✅ Casino monitoring: ACTIVE\n\n"
-        "📰 New updates are automatically "
-        "posted to their assigned channels.\n\n"
-        "Admin tests:\n"
+        "✅ Forex monitoring\n"
+        "✅ Crypto monitoring\n"
+        "✅ Casino monitoring\n\n"
+        "📰 Automatic new-update posting is active.\n\n"
         "/test_forex\n"
         "/test_crypto\n"
         "/test_casino"
     )
 
 
-# =========================================================
-# MONITOR
-# =========================================================
+async def check_forex(bot):
+
+    print("🔎 Checking Forex news...")
+
+    feed = await fetch_feed(FOREX_RSS)
+
+    if not feed or not feed.entries:
+        return
+
+    for entry in reversed(
+        feed.entries[-10:]
+    ):
+
+        identifier = item_id(entry)
+
+        if not identifier:
+            continue
+
+        if identifier in seen_forex:
+            continue
+
+        remember(
+            seen_forex,
+            identifier
+        )
+
+        print(
+            f"🆕 NEW FOREX UPDATE: "
+            f"{get_title(entry)}"
+        )
+
+        await send_post(
+            bot,
+            FOREX_CHANNELS,
+            forex_post(entry),
+            get_image(entry)
+        )
+
+
+async def check_crypto(bot):
+
+    print("🔎 Checking Crypto news...")
+
+    feed = await fetch_feed(CRYPTO_RSS)
+
+    if not feed or not feed.entries:
+        return
+
+    for entry in reversed(
+        feed.entries[-10:]
+    ):
+
+        identifier = item_id(entry)
+
+        if not identifier:
+            continue
+
+        if identifier in seen_crypto:
+            continue
+
+        remember(
+            seen_crypto,
+            identifier
+        )
+
+        print(
+            f"🆕 NEW CRYPTO UPDATE: "
+            f"{get_title(entry)}"
+        )
+
+        await send_post(
+            bot,
+            CRYPTO_CHANNELS,
+            crypto_post(entry),
+            get_image(entry)
+        )
+
+
+async def check_casino(bot):
+
+    print("🔎 Checking Casino news...")
+
+    feed = await fetch_feed(CASINO_RSS)
+
+    if not feed or not feed.entries:
+        return
+
+    for entry in reversed(
+        feed.entries[-10:]
+    ):
+
+        identifier = item_id(entry)
+
+        if not identifier:
+            continue
+
+        if identifier in seen_casino:
+            continue
+
+        remember(
+            seen_casino,
+            identifier
+        )
+
+        print(
+            f"🆕 NEW CASINO UPDATE: "
+            f"{get_title(entry)}"
+        )
+
+        await send_post(
+            bot,
+            CASINO_CHANNELS,
+            casino_post(entry),
+            get_image(entry)
+        )
+
+
+async def initialize_memory():
+
+    feeds = [
+        ("forex", FOREX_RSS),
+        ("crypto", CRYPTO_RSS),
+        ("casino", CASINO_RSS),
+    ]
+
+    for category, url in feeds:
+
+        feed = await fetch_feed(url)
+
+        if not feed or not feed.entries:
+            continue
+
+        for entry in feed.entries[-20:]:
+
+            identifier = item_id(entry)
+
+            if not identifier:
+                continue
+
+            if category == "forex":
+                seen_forex.add(identifier)
+
+            elif category == "crypto":
+                seen_crypto.add(identifier)
+
+            else:
+                seen_casino.add(identifier)
+
 
 async def monitor(application):
-
-    print(
-        "========================================"
-    )
 
     print(
         "📰 NEWS MONITOR STARTED"
     )
 
-    print(
-        "========================================"
-    )
-
-    await load_existing_articles()
+    await initialize_memory()
 
     print(
-        f"⏱ Checking every "
-        f"{CHECK_INTERVAL} seconds."
+        f"📚 Memory: "
+        f"Forex={len(seen_forex)} | "
+        f"Crypto={len(seen_crypto)} | "
+        f"Casino={len(seen_casino)}"
     )
 
     while True:
@@ -1216,29 +679,26 @@ async def monitor(application):
         )
 
 
-# =========================================================
-# STARTUP
-# =========================================================
+async def post_init(application):
 
-async def post_init(
-    application
-):
+    print("========================================")
+    print("🤖 MARKET UPDATE BOT")
+    print("========================================")
 
-    print(
-        "========================================"
-    )
+    try:
 
-    print(
-        "🤖 MARKET UPDATE BOT"
-    )
+        me = await application.bot.get_me()
 
-    print(
-        "========================================"
-    )
+        print(
+            f"✅ Connected as "
+            f"@{me.username}"
+        )
 
-    print(
-        "✅ Telegram connected"
-    )
+    except Exception as error:
+
+        print(
+            f"❌ Telegram connection error: {error}"
+        )
 
     print(
         "✅ News monitor launching"
@@ -1251,9 +711,7 @@ async def post_init(
     )
 
 
-async def post_shutdown(
-    application
-):
+async def post_shutdown(application):
 
     task = application.bot_data.get(
         "monitor_task"
@@ -1270,21 +728,25 @@ async def post_shutdown(
             pass
 
 
-# =========================================================
-# MAIN
-# =========================================================
+async def error_handler(update, context):
+
+    print(
+        f"❌ UPDATE HANDLER ERROR: "
+        f"{context.error}"
+    )
+
 
 def main():
 
     if not BOT_TOKEN:
 
         print(
-            "❌ BOT_TOKEN is missing."
+            "❌ BOT_TOKEN missing from Railway."
         )
 
         return
 
-    application = (
+    app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .post_init(post_init)
@@ -1292,39 +754,45 @@ def main():
         .build()
     )
 
-    application.add_handler(
+    app.add_handler(
         CommandHandler(
             "start",
             start_command
         )
     )
 
-    application.add_handler(
+    app.add_handler(
         CommandHandler(
             "test_forex",
             test_forex
         )
     )
 
-    application.add_handler(
+    app.add_handler(
         CommandHandler(
             "test_crypto",
             test_crypto
         )
     )
 
-    application.add_handler(
+    app.add_handler(
         CommandHandler(
             "test_casino",
             test_casino
         )
     )
 
-    print(
-        "🚀 Starting Telegram bot..."
+    app.add_error_handler(
+        error_handler
     )
 
-    application.run_polling()
+    print(
+        "🚀 Starting Telegram polling..."
+    )
+
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES
+    )
 
 
 if __name__ == "__main__":
